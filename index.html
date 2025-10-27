@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inventaire Mobile PWA</title>
+    <!-- Chargement de Tailwind CSS pour un style moderne et mobile-first -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'primary': '#10b981', // emerald-500
+                        'secondary': '#facc15', // amber-400
+                        'indigo-llm': '#4f46e5', // indigo-600 for LLM features
+                        'dark-bg': '#1f2937', // gray-800
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Style général pour simuler une application mobile */
+        body {
+            background-color: #f3f4f6; /* gray-100 */
+        }
+        .app-container {
+            max-width: 420px;
+            height: 100vh;
+            margin: auto;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
+            background-color: white;
+        }
+        .btn-action {
+            padding: 1rem;
+            border-radius: 0.75rem;
+            font-weight: 600;
+            transition: transform 0.1s;
+        }
+        .btn-action:active {
+            transform: scale(0.98);
+        }
+    </style>
+    <!-- Attention: Les variables Firebase (__app_id, etc.) ne seront PAS DISPONIBLES ici. 
+         Nous devons donc mocker l'initialisation. -->
+</head>
+<body class="font-sans">
+
+<div id="app" class="app-container">
+    <!-- En-tête de l'application -->
+    <header class="bg-primary text-white p-4 shadow-lg flex justify-between items-center">
+        <h1 class="text-xl font-bold">Inventaire PWA</h1>
+        <div id="status-indicator" class="text-sm bg-white text-primary px-3 py-1 rounded-full shadow-md">
+            Prêt
+        </div>
+    </header>
+
+    <!-- Conteneur principal qui change en fonction de l'état -->
+    <main id="main-content" class="flex-grow p-6 overflow-y-auto">
+        <!-- Le contenu sera rempli par JavaScript -->
+        <p class="text-center text-gray-500 mt-10">Chargement de l'application...</p>
+    </main>
+
+    <!-- Pied de page pour les messages d'état ou le débogage -->
+    <footer id="message-box" class="p-4 bg-gray-100 text-sm text-center text-gray-600 border-t">
+        Bienvenue ! Scannez le RFID pour commencer.
+    </footer>
+</div>
+
+<script>
+    // --- Configuration et Variables Gemini API ---
+    // NOTE: Pour que cet appel fonctionne sur un hébergement externe, vous aurez besoin 
+    // d'une clé API valide ou de la configurer via un proxy serveur.
+    const GEMINI_MODEL = "gemini-2.5-flash-preview-09-2025";
+    const API_KEY = ""; // Laissez vide.
+    const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${API_KEY}`;
+    
+    // Variables globales de l'état de la session
+    let currentSessionId = null;
+    let currentCount = 0;
+    let currentRfid = '';
+    
+    // États de l'application : 'idle', 'active', 'processing', 'complete', 'report'
+    let appState = 'idle'; 
+
+    const mainContent = document.getElementById('main-content');
+    const statusIndicator = document.getElementById('status-indicator');
+    const messageBox = document.getElementById('message-box');
+
+    // --- Fonctions d'Utilité UI ---
+    
+    /** Met à jour l'indicateur d'état et la boîte de message. */
+    function updateUIStatus(newStatus, message, colorClass = 'bg-primary text-white') {
+        statusIndicator.textContent = newStatus;
+        statusIndicator.className = `text-sm px-3 py-1 rounded-full shadow-md ${colorClass}`;
+        messageBox.textContent = message;
+    }
+
+    /** Met à jour le contenu principal en fonction de l'état de l'application. */
+    function renderApp(reportText = null) {
+        mainContent.innerHTML = ''; // Nettoyer le contenu
+        
+        switch (appState) {
+            case 'idle':
+                renderIdleState();
+                updateUIStatus('Prêt', 'Veuillez scanner la puce RFID de la parcelle.', 'bg-primary text-white');
+                break;
+            case 'active':
+                renderActiveState();
+                updateUIStatus('En Cours', `Session #${currentSessionId.substring(0, 8)} | Parcelle ${currentRfid}`, 'bg-secondary text-gray-800');
+                break;
+            case 'processing':
+                renderProcessingState();
+                updateUIStatus('API Demandée', 'Traitement en arrière-plan par Celery...', 'bg-yellow-500 text-white');
+                break;
+            case 'complete':
+                renderCompleteState();
+                updateUIStatus('Terminé', 'Inventaire finalisé avec succès.', 'bg-green-500 text-white');
+                break;
+            case 'report': // Nouvel état pour l'affichage du rapport
+                renderReportState(reportText);
+                updateUIStatus('Rapport Prêt', 'Analyse logistique générée.', 'bg-indigo-llm text-white');
+                break;
+        }
+    }
+
+    // --- Rendu des États ---
+
+    function renderIdleState() {
+        mainContent.innerHTML = `
+            <div class="space-y-6">
+                <h2 class="text-3xl font-light text-center text-gray-700 mb-8">Démarrer l'Inventaire</h2>
+                <div class="bg-gray-50 p-6 rounded-xl shadow-inner">
+                    <label for="rfid_input" class="block text-lg font-medium text-gray-700 mb-2">Simuler Lecture RFID</label>
+                    <input type="text" id="rfid_input" placeholder="Ex: PARC-456-ABC" value="PARC-1234"
+                           class="w-full p-3 border border-gray-300 rounded-lg text-lg focus:ring-primary focus:border-primary">
+                </div>
+                <button onclick="startInventory()" class="w-full btn-action bg-primary text-white text-xl shadow-lg hover:bg-emerald-600 flex items-center justify-center space-x-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                    <span>Démarrer la Session</span>
+                </button>
+            </div>
+        `;
+    }
+
+    function renderActiveState() {
+        mainContent.innerHTML = `
+            <div class="text-center space-y-8">
+                <h2 class="text-xl font-semibold text-gray-600">Comptage en Cours</h2>
+                
+                <div class="bg-primary text-white p-10 rounded-3xl shadow-2xl mx-auto w-4/5">
+                    <p class="text-sm opacity-80 mb-2">COMPTAGE TOTAL</p>
+                    <p id="display_count" class="text-7xl font-extrabold">${currentCount}</p>
+                </div>
+
+                <div class="flex justify-center space-x-4">
+                    <button onclick="updateCount()" class="btn-action bg-green-500 text-white text-3xl h-20 w-20 rounded-full shadow-xl hover:bg-green-600">
+                        +1
+                    </button>
+                    <button onclick="takePhoto()" class="btn-action bg-blue-500 text-white text-lg h-20 w-20 rounded-full shadow-xl hover:bg-blue-600">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.865-1.297a2 2 0 011.664-.89h1.866a2 2 0 011.664.89l.865 1.297a2 2 0 001.664.89H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                        </svg>
+                    </button>
+                </div>
+                
+                <div class="pt-8">
+                    <button onclick="finishInventory()" class="w-full btn-action bg-secondary text-gray-900 text-lg shadow-lg hover:bg-amber-500">
+                        Terminer l'Inventaire & Lancer l'Identification
+                    </button>
+                </div>
+            </div>
+        `;
+    }
+    
+    function renderProcessingState() {
+        mainContent.innerHTML = `
+            <div class="flex flex-col items-center justify-center space-y-6 p-8 bg-white rounded-xl shadow-lg">
+                <div class="animate-spin rounded-full h-16 w-16 border-b-4 border-yellow-500"></div>
+                <h2 class="text-xl font-semibold text-gray-700">Traitement Asynchrone en cours...</h2>
+                <p class="text-center text-gray-500">
+                    Les données (Comptage: ${currentCount} et Photos) ont été transmises à l'API Django. La tâche Celery est en cours d'exécution pour l'identification.
+                </p>
+                <p class="text-sm text-gray-400">
+                    Vous pouvez quitter cette page. L'état sera mis à jour une fois le traitement terminé.
+                </p>
+            </div>
+        `;
+    }
+    
+    function renderCompleteState() {
+        mainContent.innerHTML = `
+            <div class="flex flex-col items-center justify-center space-y-6 p-8 bg-green-50 rounded-xl shadow-lg border-l-4 border-green-500">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <h2 class="text-2xl font-bold text-green-700">Inventaire Terminé !</h2>
+                <p class="text-center text-gray-700">
+                    **${currentCount}** éléments comptés. Le résultat final de l'identification sera disponible sous peu.
+                </p>
+                
+                <button onclick="generateInventoryAnalysis()" class="w-full btn-action bg-indigo-llm text-white hover:bg-indigo-700 mt-4 flex items-center justify-center space-x-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-4m0 0l3 3m-3-3h12M4 7h16M4 3h16a1 1 0 011 1v16a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" />
+                    </svg>
+                    <span>Générer Rapport d'Analyse IA ✨</span>
+                </button>
+
+                <button onclick="resetApp()" class="btn-action bg-gray-500 text-white hover:bg-gray-600 mt-4">
+                    Nouvel Inventaire
+                </button>
+            </div>
+        `;
+    }
+
+    function renderReportState(reportText) {
+        // Conversion basique de Markdown en HTML pour l'affichage (mise en gras, sauts de ligne)
+        const htmlContent = reportText.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                                       .replace(/\n/g, '<br>');
+
+        mainContent.innerHTML = `
+            <div class="space-y-6">
+                <h2 class="text-2xl font-bold text-indigo-llm">Rapport d'Analyse Logistique ✨</h2>
+                <div class="bg-indigo-50 p-4 rounded-xl shadow-lg text-gray-800 border-l-4 border-indigo-llm">
+                    <p class="text-base font-semibold mb-2">Parcelle: ${currentRfid} | Comptage: ${currentCount}</p>
+                    <hr class="mb-3 border-indigo-200">
+                    <div id="report-output" class="text-sm leading-relaxed">
+                        ${htmlContent}
+                    </div>
+                </div>
+                <div class="pt-4">
+                    <button onclick="resetApp()" class="w-full btn-action bg-gray-500 text-white hover:bg-gray-600">
+                        Nouvel Inventaire
+                    </button>
+                </div>
+            </div>
+        `;
+    }
+
+
+    // --- Fonctions du Flux Utilisateur (Simulation API) ---
+
+    async function startInventory() {
+        const rfidInput = document.getElementById('rfid_input');
+        const rfid = rfidInput ? rfidInput.value.trim() : 'PARC-1234';
+
+        if (!rfid) {
+            updateUIStatus('Erreur', 'Veuillez entrer ou scanner un ID RFID valide.', 'bg-red-500 text-white');
+            return;
+        }
+
+        currentRfid = rfid;
+        currentCount = 0;
+        
+        console.log(`[API Call] Démarrage Session pour RFID: ${rfid}`);
+        try {
+            await new Promise(resolve => setTimeout(resolve, 500)); 
+            
+            currentSessionId = crypto.randomUUID(); 
+            appState = 'active';
+            renderApp();
+            console.log(`[API Response] Session créée: ID ${currentSessionId}`);
+
+        } catch (error) {
+            updateUIStatus('Erreur API', `Impossible de démarrer la session: ${error.message}`, 'bg-red-500 text-white');
+            appState = 'idle';
+            renderApp();
+        }
+    }
+    
+    async function updateCount() {
+        if (appState !== 'active') return;
+
+        currentCount++;
+        document.getElementById('display_count').textContent = currentCount;
+    }
+
+    async function takePhoto() {
+        if (appState !== 'active') return;
+
+        const photoId = crypto.randomUUID().substring(0, 6);
+        updateUIStatus('Photo', `Photo ${photoId} prise et transmise.`, 'bg-blue-500 text-white');
+    }
+
+    async function finishInventory() {
+        if (appState !== 'active') return;
+        
+        appState = 'processing';
+        renderApp();
+        
+        console.log(`[API Call] Finalisation et Déclenchement Asynchrone...`);
+        
+        try {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            setTimeout(() => {
+                appState = 'complete';
+                renderApp();
+            }, 5000); 
+            
+        } catch (error) {
+            updateUIStatus('Erreur Critique', `Échec du lancement du traitement: ${error.message}`, 'bg-red-700 text-white');
+            appState = 'active'; 
+            renderApp();
+        }
+    }
+
+    async function generateInventoryAnalysis() {
+        if (appState !== 'complete') return;
+        
+        const rfid = currentRfid;
+        const count = currentCount;
+        
+        updateUIStatus('Analyse IA', 'Génération du rapport d\'inventaire...', 'bg-indigo-llm text-white');
+        
+        const systemPrompt = `Vous êtes un analyste logistique professionnel. Rédigez un rapport concis (maximum 100 mots) analysant les résultats de cet inventaire. Incluez une section "Observations" pour les prochaines étapes. Le ton doit être formel et factuel.`;
+        const userQuery = `Analyse de l'inventaire terminé pour la parcelle RFID: ${rfid}. Nombre total d'articles comptés: ${count}.`;
+        
+        const payload = {
+            contents: [{ parts: [{ text: userQuery }] }],
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            tools: [{ "google_search": {} }], 
+        };
+        
+        const MAX_RETRIES = 3;
+        let response = null;
+
+        try {
+            for (let i = 0; i < MAX_RETRIES; i++) {
+                try {
+                    const fetchResponse = await fetch(GEMINI_API_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (fetchResponse.status === 429 && i < MAX_RETRIES - 1) {
+                        const delay = Math.pow(2, i) * 1000 + Math.random() * 1000;
+                        console.warn(`Rate limit hit. Retrying in ${delay / 1000}s...`);
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        continue;
+                    }
+                    
+                    if (!fetchResponse.ok) {
+                        throw new Error(`API call failed with status: ${fetchResponse.status}`);
+                    }
+
+                    response = await fetchResponse.json();
+                    break; 
+                } catch (error) {
+                    if (i === MAX_RETRIES - 1) throw error;
+                    const delay = Math.pow(2, i) * 1000 + Math.random() * 1000;
+                    console.error(`Attempt ${i + 1} failed. Retrying in ${delay / 1000}s.`, error);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            }
+
+            const text = response?.candidates?.[0]?.content?.parts?.[0]?.text || "Erreur lors de la génération du contenu IA. Veuillez vérifier votre connexion ou votre clé API.";
+            
+            appState = 'report';
+            renderApp(text);
+
+        } catch (error) {
+            console.error("Erreur critique lors de l'appel Gemini:", error);
+            updateUIStatus('Erreur IA', 'Échec de la génération du rapport.', 'bg-red-500 text-white');
+            appState = 'complete';
+            renderApp();
+        }
+    }
+
+    /** Réinitialise l'application pour un nouveau cycle. */
+    function resetApp() {
+        currentSessionId = null;
+        currentCount = 0;
+        currentRfid = '';
+        appState = 'idle';
+        renderApp();
+    }
+
+    /** Mocker l'initialisation de Firebase car nous sommes en mode standalone */
+    window.addEventListener('load', () => {
+        // Simulez un UUID pour userId si nécessaire pour le débogage.
+        window.userId = 'standalone-user-' + Math.random().toString(36).substring(2, 9);
+        console.log("Initialisation de l'interface utilisateur en mode Standalone.");
+        renderApp();
+    });
+
+</script>
+</body>
+</html>
